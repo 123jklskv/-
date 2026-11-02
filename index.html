@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>考研单词学习</title>
+<link rel="stylesheet" href="./assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M5 4.5h9.5A2.5 2.5 0 0 1 17 7v12.5H7.5A2.5 2.5 0 0 1 5 17z"/><path d="M8 8h6M8 11h6M8 14h3"/></svg>
+    </span>
+    <span class="brand-copy">
+      <strong>考研单词学习</strong>
+      <small>红宝书 · 记忆与打字</small>
+    </span>
+  </div>
+  <nav class="nav" aria-label="主导航">
+    <button class="nav-btn is-active" data-view="drill">学习</button>
+    <button class="nav-btn" data-view="stats">统计</button>
+    <button class="nav-btn" data-view="words">词库</button>
+  </nav>
+  <div class="topbar-right">
+    <button class="icon-btn" id="btnTheme" title="切换深浅色" aria-label="切换深浅色">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18z"/><circle cx="12" cy="12" r="9"/></svg>
+    </button>
+    <button class="icon-btn" id="btnSettings" title="设置" aria-label="打开设置">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6"/></svg>
+    </button>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- ============ 练习 ============ -->
+  <section class="view is-active" id="view-drill">
+    <div class="drill">
+      <div class="study-shell">
+        <div class="drill-top">
+          <span class="progress-label" id="drillIndex">已学 0 词</span>
+          <div class="drill-bar"><i id="drillBar"></i></div>
+          <span class="timer" id="drillTimer">00:00</span>
+        </div>
+
+        <div class="stage">
+          <div class="stage-kicker"><span></span><em id="stageMode">看词回忆</em><span></span></div>
+          <div class="word" id="wordText">apple</div>
+
+        <div class="phonetic-row">
+          <span class="phonetic" id="wordPhonetic">/ˈæpəl/</span>
+          <button class="speak-btn" id="btnSpeak" title="播放发音 (R)">
+            <svg viewBox="0 0 10 12" aria-hidden="true"><path d="M0 4h2.5L6 1v10L2.5 8H0z"/><path d="M7.4 3.6a3.4 3.4 0 0 1 0 4.8l.9.9a4.7 4.7 0 0 0 0-6.6z"/></svg>
+          </button>
+        </div>
+
+        <div class="meaning-block">
+          <div class="answer" id="answerText"></div>
+          <div class="full-def" id="fullDef"></div>
+        </div>
+
+        <div class="action-zone">
+          <div class="rate-row" id="rateRow">
+            <button class="rate" data-grade="1"><kbd>J</kbd>忘了</button>
+            <button class="rate" data-grade="2"><kbd>K</kbd>模糊</button>
+            <button class="rate" data-grade="3"><kbd>L</kbd>很熟</button>
+          </div>
+
+          <div class="type-row" id="typeRow">
+            <input id="typeInput" type="text" autocomplete="off" autocorrect="off"
+                   autocapitalize="off" spellcheck="false" placeholder="把中文意思敲出来">
+            <div class="feedback" id="feedback"></div>
+          </div>
+        </div>
+      </div>
+      </div>
+
+      <div class="keyboard-dock" id="keyboardDock" aria-hidden="true">
+        <div class="keyboard-panel">
+          <div class="hand-card hand-left">
+            <svg viewBox="0 0 130 152" aria-hidden="true">
+              <path class="hand-palm" d="M33 67 Q33 55 46 54 H87 Q99 55 99 70 V103 Q99 119 82 123 H50 Q34 119 33 103 Z"/>
+              <rect class="finger" data-finger="pinky" x="29" y="39" width="15" height="42" rx="7.5" transform="rotate(-8 36.5 60)"/>
+              <rect class="finger" data-finger="ring" x="47" y="28" width="15" height="51" rx="7.5" transform="rotate(-3 54.5 53.5)"/>
+              <rect class="finger" data-finger="middle" x="65" y="23" width="15" height="56" rx="7.5" transform="rotate(1 72.5 51)"/>
+              <rect class="finger" data-finger="index" x="83" y="30" width="15" height="49" rx="7.5" transform="rotate(5 90.5 54.5)"/>
+              <path class="finger thumb" data-finger="thumb" d="M99 84 Q110 80 116 88 Q120 96 111 102 L99 107 Z"/>
+              <path class="hand-wrist" d="M44 120 L44 143 Q65 149 88 143 L88 120"/>
+            </svg>
+            <span>左手</span>
+          </div>
+          <div class="kb-main">
+            <div class="kb-bar">
+              <span>键盘指法</span>
+              <span id="kbState">等待输入</span>
+            </div>
+            <div class="kb-board" id="kbBoard"></div>
+          </div>
+          <div class="hand-card hand-right">
+            <svg viewBox="0 0 130 152" aria-hidden="true">
+              <path class="hand-palm" d="M33 67 Q33 55 46 54 H87 Q99 55 99 70 V103 Q99 119 82 123 H50 Q34 119 33 103 Z"/>
+              <rect class="finger" data-finger="pinky" x="29" y="39" width="15" height="42" rx="7.5" transform="rotate(-8 36.5 60)"/>
+              <rect class="finger" data-finger="ring" x="47" y="28" width="15" height="51" rx="7.5" transform="rotate(-3 54.5 53.5)"/>
+              <rect class="finger" data-finger="middle" x="65" y="23" width="15" height="56" rx="7.5" transform="rotate(1 72.5 51)"/>
+              <rect class="finger" data-finger="index" x="83" y="30" width="15" height="49" rx="7.5" transform="rotate(5 90.5 54.5)"/>
+              <path class="finger thumb" data-finger="thumb" d="M99 84 Q110 80 116 88 Q120 96 111 102 L99 107 Z"/>
+              <path class="hand-wrist" d="M44 120 L44 143 Q65 149 88 143 L88 120"/>
+            </svg>
+            <span>右手</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="hints" id="hints"></div>
+    </div>
+  </section>
+
+  <!-- ============ 完成 ============ -->
+  <section class="view" id="view-done">
+    <div class="done">
+      <div class="done-kicker">本轮结束</div>
+      <h2 class="done-title" id="doneTitle">整本书记过的词都在复习间隔里</h2>
+      <div class="done-stats">
+        <div class="done-stat"><div class="num" id="doneWords">0</div><div class="lbl">今天过词</div></div>
+        <div class="done-stat"><div class="num" id="doneAcc">0<small>%</small></div><div class="lbl">一次打对</div></div>
+        <div class="done-stat"><div class="num" id="doneCpm">0<small>字/分</small></div><div class="lbl">打字速度</div></div>
+        <div class="done-stat"><div class="num" id="doneTime">0<small>分</small></div><div class="lbl">今天用时</div></div>
+      </div>
+      <div class="done-actions">
+        <button class="primary-btn" id="btnAgain">再复习 15 个</button>
+        <button class="ghost-btn" id="btnHome">看看统计</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 统计 ============ -->
+  <section class="view" id="view-stats">
+    <div class="page">
+      <h2 class="page-title">统计</h2>
+      <p class="page-sub">练字的成果和背词的进度，分开看。</p>
+
+      <div class="stat-cards">
+        <div class="stat-card"><div class="num" id="statWords">0</div><div class="lbl">累计完成词数</div></div>
+        <div class="stat-card"><div class="num" id="statAcc">0<small>%</small></div><div class="lbl">平均一次打对率</div></div>
+        <div class="stat-card"><div class="num" id="statCpm">0<small>字/分</small></div><div class="lbl">平均打字速度</div></div>
+        <div class="stat-card"><div class="num" id="statMastered">0</div><div class="lbl">已进入复习的词</div></div>
+      </div>
+
+      <div class="chart-block">
+        <div class="chart-head">
+          <div class="chart-title">一次打对率</div>
+          <div class="chart-latest" id="accLatest"></div>
+        </div>
+        <div class="chart" data-series="acc"></div>
+      </div>
+
+      <div class="chart-block">
+        <div class="chart-head">
+          <div class="chart-title">打字速度 · 字/分</div>
+          <div class="chart-latest" id="cpmLatest"></div>
+        </div>
+        <div class="chart" data-series="cpm"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 词库 ============ -->
+  <section class="view" id="view-words">
+    <div class="page">
+      <h2 class="page-title">词库</h2>
+      <p class="page-sub" id="wordsSub">《2024 考研英语词汇 红宝书》，按原书词根顺序排列。</p>
+
+      <div class="word-tools">
+        <input id="wordSearch" type="text" autocomplete="off" spellcheck="false"
+               placeholder="搜索单词或中文释义">
+        <span class="word-count" id="wordCount"></span>
+      </div>
+
+      <div class="table-card">
+        <table class="word-table">
+          <thead>
+            <tr><th style="width:34%">单词</th><th style="width:24%">音标</th><th style="width:28%">要打出的中文</th><th>状态</th></tr>
+          </thead>
+          <tbody id="wordTableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="word-more">
+        <button class="ghost-btn" id="btnMoreWords" style="padding:7px 18px;font-size:12.5px">显示更多</button>
+      </div>
+
+      <div class="import-box">
+        <h3 class="chart-title" style="margin-bottom:10px">导入你自己的词表</h3>
+        <textarea id="importText" placeholder="apple | /ˈæpəl/ | n. 苹果；苹果树
+abandon | /əˈbændən/ | v. 放弃；抛弃
+
+一行一个词，分隔符用 | 或逗号，也可以直接从 Excel 复制四列贴进来。"></textarea>
+        <div class="import-actions">
+          <button class="primary-btn" id="btnImport" style="padding:9px 20px;font-size:13px">导入</button>
+          <button class="ghost-btn" id="btnImportDemo" style="padding:8px 16px">填一段示例</button>
+          <span class="import-hint" id="importHint"></span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ============ 设置抽屉 ============ -->
+<div class="drawer-mask" id="drawerMask"></div>
+<aside class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div class="drawer-title">设置</div>
+    <button class="icon-btn" id="btnDrawerClose">✕</button>
+  </div>
+
+  <div class="setting">
+    <div>
+      <div class="setting-name">自动播放发音</div>
+      <div class="setting-desc">单词出现时自动念一遍</div>
+    </div>
+    <div class="switch on" data-toggle="autoplay"></div>
+  </div>
+
+  <div class="setting">
+    <div>
+      <div class="setting-name">打字时隐藏答案</div>
+      <div class="setting-desc">打开后要凭记忆打，难度更高</div>
+    </div>
+    <div class="switch" data-toggle="hideAnswer"></div>
+  </div>
+
+  <div class="setting">
+    <div>
+      <div class="setting-name">拼音提示</div>
+      <div class="setting-desc">打字时在汉字上方显示拼音，敲对即变蓝</div>
+    </div>
+    <div class="switch on" data-toggle="showPinyin"></div>
+  </div>
+
+  <div class="setting">
+    <div>
+      <div class="setting-name">音效</div>
+      <div class="setting-desc">按键、对、错的轻提示音</div>
+    </div>
+    <div class="switch on" data-toggle="sound"></div>
+  </div>
+
+  <div class="setting">
+    <div>
+      <div class="setting-name">字号</div>
+      <div class="setting-desc">整体缩放</div>
+    </div>
+    <div class="seg" data-seg="fontScale">
+      <button data-val="0.92">小</button>
+      <button data-val="1" class="on">标准</button>
+      <button data-val="1.1">大</button>
+    </div>
+  </div>
+
+  <button class="danger-btn" id="btnReset">清空全部学习记录</button>
+</aside>
+
+<script src="./assets/words.js"></script>
+<script src="./assets/vendor/pinyin-pro.js"></script>
+<script src="./assets/app.js"></script>
+</body>
+</html>
