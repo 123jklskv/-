@@ -1,0 +1,9 @@
+# 本地验证脚本与截图（开发时调试用，不影响网站运行）
+_data/re/
+
+# 浏览器 / CDP 临时配置
+_data/re/.profile*/
+
+# 系统杂项
+.DS_Store
+Thumbs.db

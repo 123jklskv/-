@@ -286,19 +286,184 @@
     return fallback[k] || '';
   }
 
-  function setFingerActive(finger, on) {
-    if (!finger) return;
-    var sides = finger === 'thumb' ? ['left', 'right'] : [finger.split('-')[0]];
-    var name = finger === 'thumb' ? 'thumb' : finger.split('-')[1];
-    sides.forEach(function (side) {
-      var node = document.querySelector('.hand-' + side + ' .finger[data-finger="' + name + '"]');
-      if (node) node.classList.toggle('is-active', on);
+  // ================= 手部 =================
+  // 照搬 edclub 的机制：一张 716×380 的 SVG 里预先画好 58 个姿势图层，
+  // 每个图层就是一整只手的静态画（放松 / 某根手指按某个键）。
+  // 运行时只切 display，不做任何变形计算；左右手各显示一层，同时出现。
+
+  // KeyboardEvent.code → 图层 id
+  var LAYER_OF_CODE = {
+    Backquote: 'tilda', Digit1: 'key-1', Digit2: 'key-2', Digit3: 'key-3', Digit4: 'key-4',
+    Digit5: 'key-5', Digit6: 'key-6', Digit7: 'key-7', Digit8: 'key-8', Digit9: 'key-9',
+    Digit0: 'key-0', Minus: 'minus', Equal: 'equal',
+    BracketLeft: 'open-bracket', BracketRight: 'close-bracket', Backslash: 'backslash',
+    KeyQ: 'q', KeyW: 'w', KeyE: 'e', KeyR: 'r', KeyT: 't', KeyY: 'y', KeyU: 'u',
+    KeyI: 'i', KeyO: 'o', KeyP: 'p',
+    KeyA: 'a', KeyS: 's', KeyD: 'd', KeyF: 'f', KeyG: 'g', KeyH: 'h', KeyJ: 'j',
+    KeyK: 'k', KeyL: 'l',
+    KeyZ: 'z', KeyX: 'x', KeyC: 'c', KeyV: 'v', KeyB: 'b', KeyN: 'n', KeyM: 'm',
+    Semicolon: 'semicolon', Quote: 'quote', Comma: 'comma', Period: 'dot', Slash: 'slash',
+    Tab: 'tab', Enter: 'enter', Space: 'space',
+    ShiftLeft: 'shift-left', ShiftRight: 'shift-right'
+  };
+
+  // 按住键的先后顺序，最新的在最前
+  var heldStack = [];
+
+  // 指法提示：下一个该敲的字母（由输入法缓冲 + 当前字的拼音推出来）
+  var hintCode = '';
+  var hintLetter = '';
+  var hintDone = false;
+
+  function heldPush(code) {
+    var i = heldStack.indexOf(code);
+    if (i >= 0) heldStack.splice(i, 1);
+    heldStack.unshift(code);
+  }
+
+  function heldDrop(code) {
+    var i = heldStack.indexOf(code);
+    if (i >= 0) heldStack.splice(i, 1);
+  }
+
+  // 某个手该显示哪一层：取这只手最近按下的键；
+  // 没有按键（或该键没有画姿势层）就用放松层。
+  function layerOfHand(side) {
+    var neutral = side === 'left' ? 'neutral-left' : 'neutral-right';
+    for (var i = 0; i < heldStack.length; i++) {
+      var f = FINGER_MAP[heldStack[i]];
+      if (!f) continue;
+      var belong = f === 'thumb' ? 'right' : f.split('-')[0];
+      if (belong !== side) continue;
+      var layer = LAYER_OF_CODE[heldStack[i]];
+      if (layer) return layer;
+    }
+
+    // 没按键时，把「下一个要敲的字母」那条手指伸到键上，当作指法提示
+    var hf = FINGER_MAP[hintCode];
+    if (hf && hintCode) {
+      var hSide = hf === 'thumb' ? 'right' : hf.split('-')[0];
+      if (hSide === side && LAYER_OF_CODE[hintCode]) return LAYER_OF_CODE[hintCode];
+    }
+
+    return neutral;
+  }
+
+  // 与 edclub 的 focus_hand(l, r) 逐行对应：
+  // 两只手各亮一层，缺的一侧退回 neutral。
+  function focusHand(leftId, rightId) {
+    var host = el('handsSvg');
+    if (!host) return;
+    var layers = host.querySelectorAll('g.st0');
+    var shown = [false, false];
+    var neutral = [null, null];
+
+    for (var i = 0; i < layers.length; i++) {
+      var g = layers[i];
+      var id = g.id.replace(/^hb-/, '');
+      if (id === 'neutral-left') neutral[0] = g;
+      if (id === 'neutral-right') neutral[1] = g;
+      if (id === leftId || id === rightId) {
+        g.style.display = 'block';
+        shown[id === leftId ? 0 : 1] = true;
+      } else {
+        g.style.display = 'none';
+      }
+    }
+
+    for (var k = 0; k < 2; k++) {
+      if (!shown[k] && neutral[k]) neutral[k].style.display = 'block';
+    }
+  }
+
+  function syncHands() {
+    focusHand(layerOfHand('left'), layerOfHand('right'));
+  }
+
+  // ===== 下一个字母的指法提示 =====
+  // 已提交的字数 → 当前字的拼音 → 减去输入法缓冲里已敲的字母 → 剩下的第一个就是下一个字母
+  function hintState() {
+    var out = { letter: '', done: false };
+    if (state.view !== 'drill' || state.phase !== 'typing' || state.locked) return out;
+    // 开了「隐藏答案」就不再提示字母，否则等于把读音漏出来
+    if (db.settings.hideAnswer) return out;
+    var w = state.current;
+    if (!w) return out;
+
+    var chars = Array.from(w.a || '');
+    var typed = Array.from(state.committed || '').length;
+    if (typed >= chars.length) return out;
+
+    var target = String(pinyinAlign(w.a || '')[typed] || '')
+      .replace(/ü/g, 'v').replace(/[^a-z]/g, '');
+    if (!target) return out;
+
+    var buf = String(state.comp || '').toLowerCase().replace(/[^a-z]/g, '');
+    var n = 0;
+    while (n < buf.length && n < target.length && buf.charAt(n) === target.charAt(n)) n++;
+    if (n >= target.length) {           // 这个字的拼音敲全了，在等选字上屏
+      out.done = buf.length >= target.length;
+      return out;
+    }
+    // 敲错/简拼对不上时，提示的仍然是「这一位该敲的字母」，把人带回来
+    out.letter = target.charAt(n);
+    return out;
+  }
+
+  function idleStateText() {
+    if (hintDone) return '选字 · 空格上屏';
+    if (!hintLetter) return '等待输入';
+    var name = FINGER_NAMES[FINGER_MAP[hintCode]] || '';
+    return '下一个 ' + hintLetter + (name ? ' · ' + name : '');
+  }
+
+  function clearHint() {
+    hintCode = '';
+    hintLetter = '';
+    hintDone = false;
+    document.querySelectorAll('.kb-key.is-hint').forEach(function (n) {
+      n.classList.remove('is-hint');
     });
+  }
+
+  // 提示变化时才动 DOM：换高亮的键、换手的图层
+  function updateHint() {
+    var h = hintState();
+    var letter = h.letter;
+    var code = letter ? 'Key' + letter.toUpperCase() : '';
+    hintDone = h.done;
+    if (code === hintCode) return;
+
+    hintCode = code;
+    hintLetter = letter;
+
+    document.querySelectorAll('.kb-key.is-hint').forEach(function (n) {
+      n.classList.remove('is-hint');
+    });
+    if (code) {
+      var key = document.querySelector('.kb-key[data-code="' + code + '"]');
+      if (key) key.classList.add('is-hint');
+    }
+
+    syncHands();
+    if (!document.querySelector('.kb-key.is-down')) {
+      var live = el('kbState');
+      if (live) live.textContent = idleStateText();
+    }
+  }
+
+  function mountHands() {
+    var host = el('handsSvg');
+    if (!host || !window.HANDS_SVG) return;
+    host.innerHTML = window.HANDS_SVG;
+    syncHands();
   }
 
   function clearKeyboard() {
     document.querySelectorAll('.kb-key.is-down').forEach(function (n) { n.classList.remove('is-down'); });
-    document.querySelectorAll('.hand-card .finger.is-active').forEach(function (n) { n.classList.remove('is-active'); });
+    heldStack = [];
+    clearHint();
+    syncHands();
     var live = el('kbState');
     if (live) live.textContent = '等待输入';
   }
@@ -310,26 +475,28 @@
     dock.setAttribute('aria-hidden', on ? 'false' : 'true');
     var drill = document.querySelector('.drill');
     if (drill) drill.classList.toggle('kb-open', !!on);
-    if (!on) clearKeyboard();
+    if (on) syncHands(); else clearKeyboard();
   }
 
   function visualKey(e, down) {
     if (state.view !== 'drill' || state.phase !== 'typing') return;
-    if (document.activeElement !== el('typeInput')) return;
+    // 抬起一律处理：否则按着键切走焦点时，手会一直停在下压姿势
+    if (down && document.activeElement !== el('typeInput')) return;
     var code = eventCode(e);
     if (!code) return;
     var key = document.querySelector('.kb-key[data-code="' + code + '"]');
     if (!key) return;
 
     key.classList.toggle('is-down', !!down);
+    if (down) heldPush(code); else heldDrop(code);
+    syncHands();
     var finger = FINGER_MAP[code];
-    setFingerActive(finger, !!down);
 
     if (down) {
       var name = FINGER_NAMES[finger] || '';
       el('kbState').textContent = (key.dataset.label || '') + (name ? ' · ' + name : '');
     } else if (!document.querySelector('.kb-key.is-down')) {
-      el('kbState').textContent = '等待输入';
+      el('kbState').textContent = idleStateText();
     }
   }
 
@@ -764,6 +931,11 @@
 
     var html = '';
 
+    // 下一个待敲字母在整串拼音里的序号（用于拼音行与键盘的同步提示）
+    var nextIdx = base + compOn;
+    // 提示只落在当前这个字上：拼音敲全、在等选字时不要跳到下一个字
+    var nxLimit = pre[Math.min(typed.length + 1, chars.length)];
+
     chars.forEach(function (ch, i) {
       var cls = 'pending';
       if (i < typed.length) cls = typed[i] === ch ? 'ok' : 'bad';
@@ -787,7 +959,9 @@
           var on = i < typed.length
             ? cls === 'ok'
             : (g >= base && g < base + compOn);
-          return '<i class="' + (on ? 'on' : '') + '">' + esc(L) + '</i>';
+          // 紧挨着已敲字母后的那一个，就是键盘上要提示、手指要落下的字母
+          var nx = (!on && !state.locked && state.phase === 'typing' && g === nextIdx && nextIdx < nxLimit);
+          return '<i class="' + (on ? 'on' : '') + (nx ? ' nx' : '') + '">' + esc(L) + '</i>';
         }).join('');
       }
 
@@ -805,6 +979,7 @@
     }
 
     host.innerHTML = html;
+    updateHint();
   }
 
   function setFeedback(msg, kind) {
@@ -1411,6 +1586,7 @@
   // ================= 启动 =================
   // 没有欢迎页也没有每日任务：打开就是接着上次的那个词
   buildKeyboard();
+  mountHands();
   applySettings();
   bind();
   startTimer();

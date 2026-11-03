@@ -79,36 +79,13 @@
 
       <div class="keyboard-dock" id="keyboardDock" aria-hidden="true">
         <div class="keyboard-panel">
-          <div class="hand-card hand-left">
-            <svg viewBox="0 0 130 152" aria-hidden="true">
-              <path class="hand-palm" d="M33 67 Q33 55 46 54 H87 Q99 55 99 70 V103 Q99 119 82 123 H50 Q34 119 33 103 Z"/>
-              <rect class="finger" data-finger="pinky" x="29" y="39" width="15" height="42" rx="7.5" transform="rotate(-8 36.5 60)"/>
-              <rect class="finger" data-finger="ring" x="47" y="28" width="15" height="51" rx="7.5" transform="rotate(-3 54.5 53.5)"/>
-              <rect class="finger" data-finger="middle" x="65" y="23" width="15" height="56" rx="7.5" transform="rotate(1 72.5 51)"/>
-              <rect class="finger" data-finger="index" x="83" y="30" width="15" height="49" rx="7.5" transform="rotate(5 90.5 54.5)"/>
-              <path class="finger thumb" data-finger="thumb" d="M99 84 Q110 80 116 88 Q120 96 111 102 L99 107 Z"/>
-              <path class="hand-wrist" d="M44 120 L44 143 Q65 149 88 143 L88 120"/>
-            </svg>
-            <span>左手</span>
+          <div class="kb-bar">
+            <span>键盘指法</span>
+            <span id="kbState">等待输入</span>
           </div>
-          <div class="kb-main">
-            <div class="kb-bar">
-              <span>键盘指法</span>
-              <span id="kbState">等待输入</span>
-            </div>
+          <div class="kb-wrap">
             <div class="kb-board" id="kbBoard"></div>
-          </div>
-          <div class="hand-card hand-right">
-            <svg viewBox="0 0 130 152" aria-hidden="true">
-              <path class="hand-palm" d="M33 67 Q33 55 46 54 H87 Q99 55 99 70 V103 Q99 119 82 123 H50 Q34 119 33 103 Z"/>
-              <rect class="finger" data-finger="pinky" x="29" y="39" width="15" height="42" rx="7.5" transform="rotate(-8 36.5 60)"/>
-              <rect class="finger" data-finger="ring" x="47" y="28" width="15" height="51" rx="7.5" transform="rotate(-3 54.5 53.5)"/>
-              <rect class="finger" data-finger="middle" x="65" y="23" width="15" height="56" rx="7.5" transform="rotate(1 72.5 51)"/>
-              <rect class="finger" data-finger="index" x="83" y="30" width="15" height="49" rx="7.5" transform="rotate(5 90.5 54.5)"/>
-              <path class="finger thumb" data-finger="thumb" d="M99 84 Q110 80 116 88 Q120 96 111 102 L99 107 Z"/>
-              <path class="hand-wrist" d="M44 120 L44 143 Q65 149 88 143 L88 120"/>
-            </svg>
-            <span>右手</span>
+            <div class="hands" id="handsSvg" aria-hidden="true"></div>
           </div>
         </div>
       </div>
@@ -264,6 +241,7 @@ abandon | /əˈbændən/ | v. 放弃；抛弃
 </aside>
 
 <script src="./assets/words.js"></script>
+<script src="./assets/hands.js"></script>
 <script src="./assets/vendor/pinyin-pro.js"></script>
 <script src="./assets/app.js"></script>
 </body>
