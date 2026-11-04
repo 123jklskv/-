@@ -818,11 +818,12 @@
     state.wordStart = Date.now();
 
     el('wordText').textContent = w.w;
-    el('stageMode').textContent = mode === 'retry' ? '巩固记忆' : mode === 'due' ? '间隔复习' : '看词回忆';
+    el('stageMode').textContent = mode === 'retry' ? '巩固记忆' : mode === 'due' ? '间隔复习' : '看词自评';
     el('wordPhonetic').textContent = w.ph || '';
     el('fullDef').textContent = w.def;
     el('fullDef').classList.remove('show');
-    el('rateRow').classList.remove('show');
+    // 三个自评选项在看词阶段就出现：先凭印象定级，定完才揭晓中文
+    el('rateRow').classList.add('show');
     el('typeRow').classList.remove('show');
     showKeyboard(false);
 
@@ -845,13 +846,14 @@
   // 提示语随取词来源变化，让人知道这是刚见过的词
   function hintText(w, mode) {
     var tail = '　·　R 重听发音';
-    if (mode === 'retry') return '这个词刚才没记住，再打一遍　·　空格 揭示中文' + tail;
+    var rate = 'J 忘了　·　K 模糊　·　L 很熟';
+    if (mode === 'retry') return '这个词刚才没记住，再打一遍　·　' + rate + tail;
     if (mode === 'due') {
       var r = db.records[w.w];
       var gap = r && r.lastAt ? humanGap(Date.now() - r.lastAt) : '';
-      return '复习' + (gap ? ' · 上次是 ' + gap + '前' : '') + '　·　空格 揭示中文' + tail;
+      return '复习' + (gap ? ' · 上次是 ' + gap + '前' : '') + '　·　' + rate + tail;
     }
-    return '空格 或 点击 揭示中文' + tail;
+    return '先凭印象判断：' + rate + tail;
   }
 
   function renderProgress() {
@@ -933,6 +935,13 @@
     var hide = db.settings.hideAnswer && state.phase === 'typing';
     var showPy = !masked && !hide && db.settings.showPinyin !== false;
 
+    // 自评阶段整个答案区都不出现，连字数也不透露
+    if (masked) {
+      host.innerHTML = '';
+      updateHint();
+      return;
+    }
+
     // 每个字起始位置对应的字母序号
     var pre = [0];
     for (var k = 0; k < chars.length; k++) pre.push(pre[k] + (py[k] || '').length);
@@ -961,10 +970,6 @@
       var cls = 'pending';
       if (i < typed.length) cls = typed[i] === ch ? 'ok' : 'bad';
 
-      if (masked) {
-        html += '<span class="cell"><span class="py"></span><span class="mask"></span></span>';
-        return;
-      }
       if (hide) {
         var color = cls === 'ok' ? '--accent' : cls === 'bad' ? '--bad' : '--pending';
         html += '<span class="cell"><span class="py"></span>' +
@@ -992,7 +997,7 @@
         '</span>';
     });
 
-    if (!masked && !hide && typed.length > chars.length) {
+    if (!hide && typed.length > chars.length) {
       for (var i = chars.length; i < typed.length; i++) {
         html += '<span class="cell"><span class="py"></span>' +
           '<span class="ch bad">' + esc(typed[i]) + '</span></span>';
@@ -1009,25 +1014,17 @@
     f.className = 'feedback' + (kind ? ' ' + kind : '');
   }
 
-  function reveal() {
-    if (state.phase !== 'recall') return;
-    state.phase = 'rate';
-    el('stageMode').textContent = '选择记忆程度';
-    el('fullDef').classList.add('show');
-    el('rateRow').classList.add('show');
-    renderAnswer();
-    el('hints').textContent = 'J 忘了　·　K 模糊　·　L 很熟';
-    beep(520, 0.05, 'sine', 0.03);
-  }
-
+  // 自评即揭示：三个选项在看词阶段就摆着，选完才把中文释义放出来
   function rate(g) {
-    if (state.phase !== 'rate') return;
+    if (state.phase !== 'recall') return;
     state.grade = g;
     state.phase = 'typing';
     el('stageMode').textContent = '中文打字';
+    el('fullDef').classList.add('show');
     el('rateRow').classList.remove('show');
     el('typeRow').classList.add('show');
     showKeyboard(true);
+    beep(520, 0.05, 'sine', 0.03);
 
     var inp = el('typeInput');
     inp.disabled = false;
@@ -1459,11 +1456,6 @@
       });
     });
 
-    // 点击卡片任意处揭示
-    el('view-drill').addEventListener('click', function (e) {
-      if (state.phase === 'recall' && !e.target.closest('.type-row')) reveal();
-    });
-
     var inp = el('typeInput');
 
     inp.addEventListener('compositionstart', function () {
@@ -1533,10 +1525,8 @@
         if (tag === 'INPUT' && e.key !== 'Enter') return;
       }
 
+      // 看词阶段先自评：J/K/L 定了级，才揭晓中文并进入打字
       if (state.phase === 'recall') {
-        if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); reveal(); return; }
-        if (e.key === 'r' || e.key === 'R') { if (state.current) speak(state.current.w, true); return; }
-      } else if (state.phase === 'rate') {
         if (e.key === 'j' || e.key === 'J' || e.key === '1') { e.preventDefault(); rate(1); return; }
         if (e.key === 'k' || e.key === 'K' || e.key === '2') { e.preventDefault(); rate(2); return; }
         if (e.key === 'l' || e.key === 'L' || e.key === '3') { e.preventDefault(); rate(3); return; }
