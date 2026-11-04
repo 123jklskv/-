@@ -1255,8 +1255,14 @@
     }
 
     var gid = 'chartGrad' + (++chartSeq);
-    var W = 640, H = 150, PL = 42, PR = 16, PT = 16, PB = 28;
-    var iw = W - PL - PR, ih = H - PT - PB;
+    // 按宿主的真实尺寸出图：一屏布局下图表高度是「剩余空间」，
+    // 固定 640x150 的 viewBox 会被拉伸或留白。
+    var W = Math.max(260, Math.round(host.clientWidth || 640));
+    var H = Math.max(74, Math.round(host.clientHeight || 150));
+    var PL = 40, PR = 14;
+    var PT = Math.min(16, Math.round(H * 0.12)) + 2;
+    var PB = Math.min(26, Math.round(H * 0.18)) + 2;
+    var iw = W - PL - PR, ih = Math.max(20, H - PT - PB);
 
     var maxV = fixedMax || Math.max.apply(null, pts.map(function (p) { return p.v; }).concat([1])) * 1.18;
     var X = function (i) { return pts.length === 1 ? PL + iw / 2 : PL + (iw * i) / (pts.length - 1); };
@@ -1287,15 +1293,24 @@
 
     var labels = '';
     var step = pts.length > 1 ? Math.ceil(pts.length / 5) : 1;
+    var idxs = [];
     pts.forEach(function (p, i) {
-      if (i % step !== 0 && i !== pts.length - 1) return;
+      if (i % step === 0 || i === pts.length - 1) idxs.push(i);
+    });
+    // 图变窄时最后一天会和前一个刻度贴在一起，挤不下就只留最后一天
+    if (idxs.length > 1) {
+      var lastI = idxs[idxs.length - 1], prevI = idxs[idxs.length - 2];
+      if (X(lastI) - X(prevI) < 42) idxs.splice(idxs.length - 2, 1);
+    }
+    idxs.forEach(function (i) {
       labels += '<text x="' + X(i).toFixed(1) + '" y="' + (H - 8) + '" text-anchor="middle" ' +
         'font-size="10" font-family="ui-monospace, Menlo, Consolas, monospace" fill="var(--faint)">' +
-        p.k.slice(5) + '</text>';
+        pts[i].k.slice(5) + '</text>';
     });
 
     host.innerHTML =
-      '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;height:auto;display:block">' +
+      '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" ' +
+      'style="width:100%;height:100%;display:block">' +
       '<defs><linearGradient id="' + gid + '" x1="0" y1="0" x2="0" y2="1">' +
       '<stop offset="0%" stop-color="' + color + '" stop-opacity="0.11" />' +
       '<stop offset="100%" stop-color="' + color + '" stop-opacity="0" />' +
@@ -1307,6 +1322,17 @@
       dots + labels +
       '</svg>';
   }
+
+  // 窗口尺寸变化后图表要按新的剩余高度重新出图，否则 SVG 会被拉伸
+  var chartResizeTimer = null;
+  window.addEventListener('resize', function () {
+    var vs = document.getElementById('view-stats');
+    if (!vs || !vs.classList.contains('is-active')) return;
+    if (chartResizeTimer) clearTimeout(chartResizeTimer);
+    chartResizeTimer = setTimeout(function () {
+      if (vs.classList.contains('is-active')) renderStats();
+    }, 160);
+  });
 
   // ================= 词库 =================
   var WORD_CHUNK = 200;
@@ -1602,6 +1628,21 @@
 
     el('btnImport').addEventListener('click', doImport);
 
+    // 导入区默认高度随视口：高屏展开，矮屏收起，把行数留给词表
+    var importBox = el('importBox');
+    var importToggle = el('importToggle');
+    if (importBox && importToggle) {
+      var caret = importToggle.querySelector('.import-caret');
+      var setImportOpen = function (open) {
+        importBox.classList.toggle('is-open', open);
+        if (caret) caret.textContent = open ? '收起' : '展开';
+      };
+      setImportOpen(window.innerHeight > 680);
+      importToggle.addEventListener('click', function () {
+        setImportOpen(!importBox.classList.contains('is-open'));
+      });
+    }
+
     var searchTimer = null;
     el('wordSearch').addEventListener('input', function (e) {
       wordFilter = e.target.value;
@@ -1610,6 +1651,16 @@
     });
 
     el('btnMoreWords').addEventListener('click', function () { renderWords(false); });
+
+    // 表格卡片内部滚动到底部时自动续上下一批，省掉一次点击
+    var tableCard = document.querySelector('#view-words .table-card');
+    if (tableCard) {
+      tableCard.addEventListener('scroll', function () {
+        if (tableCard.scrollTop + tableCard.clientHeight < tableCard.scrollHeight - 140) return;
+        var more = el('btnMoreWords');
+        if (more && !more.hidden) renderWords(false);
+      });
+    }
 
     el('btnImportDemo').addEventListener('click', function () {
       el('importText').value =
