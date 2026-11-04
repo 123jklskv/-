@@ -1,6 +1,13 @@
 # 本地验证脚本与截图（开发时调试用，不影响网站运行）
 _data/re/
 
+# 第三方词库原始数据（约 29MB，_data/build-detail.js 会自动重新下载）
+# 生成物 assets/detail/ 才是网站要用的，需要提交
+_data/dicts/
+
+# 参考用的第三方开源仓库（只阅读，不是本站代码）
+英语单词背诵github/
+
 # 浏览器 / CDP 临时配置
 _data/re/.profile*/
 

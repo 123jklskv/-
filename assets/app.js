@@ -2,9 +2,23 @@
   'use strict';
 
   var STORE_KEY = 'wordtype.v1';
+  // 还没有账号系统：所有数据都在本机这份档案里。
+  // 将来接入账号后，把 USER_SCOPE 设成用户 id，本地档案就按人分开，
+  // 两个人共用一台电脑也不会串收藏（服务端同步另行实现，数据结构不用改）。
+  var USER_SCOPE = '';
   var MAX_TRIES = 3;
   var MIN = 60000;
   var DAY = 86400000;
+
+  // 动态间隔复习的参数（放这么靠前，是因为 load() 迁移旧数据时要用到 IV_MAX）
+  // 首次：忘了 15 分钟、模糊 20 分钟、很熟 1 天
+  // 之后：忘了重置 15 分钟；模糊 ×1.5（至少 1 小时）；很熟 ×2.2（至少 1 天）；最多 15 天
+  var IV_FORGOT = 15 * MIN;
+  var IV_FUZZY = 20 * MIN;
+  var IV_FAMILIAR = DAY;
+  var IV_FUZZY_MIN = 60 * MIN;
+  var IV_FAMILIAR_MIN = DAY;
+  var IV_MAX = 15 * DAY;
   var DEFAULTS = {
     theme: 'light',
     sound: true,
@@ -17,13 +31,18 @@
   var el = function (id) { return document.getElementById(id); };
 
   // ================= 存储 =================
+  function storeKey() {
+    return USER_SCOPE ? STORE_KEY + ':' + USER_SCOPE : STORE_KEY;
+  }
+
   var db = load();
 
   function load() {
     var raw = {};
-    try { raw = JSON.parse(localStorage.getItem(STORE_KEY) || '{}') || {}; } catch (e) { raw = {}; }
+    try { raw = JSON.parse(localStorage.getItem(storeKey()) || '{}') || {}; } catch (e) { raw = {}; }
     var recs = raw.records || {};
     // 兼容旧数据：把按「天」存的 due 换成时间戳
+    var cap = Date.now() + IV_MAX;
     Object.keys(recs).forEach(function (k) {
       var r = recs[k];
       if (r.dueAt === undefined) {
@@ -35,35 +54,62 @@
         delete r.due;
       }
       if (r.iv === undefined) r.iv = (r.interval || 0) * DAY;
+      // 新规则上限 15 天：老数据可能算到几个月之后，统一压回上限内，
+      // 否则这些词会长期不出现，和「逾期优先」的规则也对不上
+      if (r.iv > IV_MAX) r.iv = IV_MAX;
+      if (r.dueAt > cap) r.dueAt = cap;
+      // 新增字段：累计忘记次数（老数据没有，从 0 起算，不清空任何已有内容）
+      if (r.forgot === undefined) r.forgot = 0;
       delete r.interval;
     });
     return {
       settings: Object.assign({}, DEFAULTS, raw.settings || {}),
       records: recs,
       days: raw.days || {},
-      custom: raw.custom || []
+      custom: raw.custom || [],
+      // 收藏：{ 单词: 收藏时间戳 }，时间戳只用来排序（最新收藏排最前）
+      favs: (raw.favs && typeof raw.favs === 'object') ? raw.favs : {}
     };
   }
 
   function save() {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); } catch (e) {}
+    try { localStorage.setItem(storeKey(), JSON.stringify(db)); } catch (e) {}
   }
 
+  // 记录字段（复用旧的，不新建结构）：
+  //   word          → db.records 的键
+  //   review_count  → seen
+  //   last_rating   → last
+  //   interval      → iv（毫秒；跨「天」时除以 DAY 即为 interval_days）
+  //   last_review_at→ lastAt
+  //   next_review_at→ dueAt
+  //   forget_count  → forgot
   function getRec(word) {
     if (!db.records[word]) {
-      db.records[word] = { ease: 2.5, reps: 0, iv: 0, dueAt: 0, last: 0, seen: 0, wrong: 0, lastAt: 0 };
+      db.records[word] = { ease: 2.5, reps: 0, iv: 0, dueAt: 0, last: 0, seen: 0, wrong: 0, lastAt: 0, forgot: 0 };
     }
     var r = db.records[word];
     if (r.dueAt === undefined) r.dueAt = 0;
     if (r.iv === undefined) r.iv = 0;
+    if (r.forgot === undefined) r.forgot = 0;
     return r;
   }
 
   var wordCache = null;
+  var wordIndex = null;
 
   function allWords() {
     if (!wordCache) wordCache = db.custom.concat(window.WORD_BANK || []);
     return wordCache;
+  }
+
+  // 单词 → 词条。收藏只存单词和时间戳，释义、音标一律回词库取，不重复存数据。
+  function wordByKey() {
+    if (!wordIndex) {
+      wordIndex = {};
+      allWords().forEach(function (w) { wordIndex[w.w] = w; });
+    }
+    return wordIndex;
   }
 
   // ================= 日期 =================
@@ -98,50 +144,105 @@
     return Math.round(d / 30) + '个月';
   }
 
-  // ================= 间隔重复 =================
-  // 忘了：2 分钟后重来；模糊：8 分钟后重来；很熟：按 SM-2 拉长到 1/3/7… 天
+  // ================= 动态间隔复习 =================
+  // 参数见文件头的 IV_* 常量。全部按「实际完成评价的时刻」起算，存时间戳，
+  // 不碰日期字符串，所以跨天、跨月、跨年、换时区都不会算错。
+
+  // 向上取整到分钟：30.0001 分钟这类零头不进位会越滚越偏
+  function ceilMinute(ms) {
+    return Math.ceil(ms / MIN) * MIN;
+  }
+
+  // 算出这次评价之后该隔多久再出现
+  function nextInterval(rec, grade) {
+    var first = !(rec.seen > 0);        // 第一次评价这个单词
+    var prev = rec.iv || 0;             // 上一次的复习间隔
+    var next;
+    if (grade === 1) {
+      next = IV_FORGOT;                 // 忘了：不论第几次都重置
+    } else if (grade === 2) {
+      next = first ? IV_FUZZY : Math.max(IV_FUZZY_MIN, ceilMinute(prev * 1.5));
+    } else {
+      next = first ? IV_FAMILIAR : Math.max(IV_FAMILIAR_MIN, ceilMinute(prev * 2.2));
+    }
+    return Math.min(next, IV_MAX);
+  }
+
+  // 写入一条复习记录：interval / next_review_at / last_rating / last_review_at
+  // 复用现有字段：iv = interval_days、dueAt = next_review_at、
+  // last = last_rating、lastAt = last_review_at、seen = review_count、forgot = forget_count
   function applyGrade(rec, grade) {
     var now = Date.now();
-    if (grade === 1) {
-      rec.reps = 0;
-      rec.iv = 0;
-      rec.ease = Math.max(1.3, rec.ease - 0.18);
-      rec.dueAt = now + 2 * MIN;
-    } else if (grade === 2) {
-      rec.reps = Math.max(1, rec.reps);
-      rec.iv = rec.iv > 0 ? Math.round(rec.iv * 0.6) : 0;
-      rec.ease = Math.max(1.3, rec.ease - 0.05);
-      rec.dueAt = now + 8 * MIN;
-    } else {
-      rec.reps += 1;
-      if (rec.iv <= 0 || rec.iv < MIN) rec.iv = DAY;
-      else if (rec.reps <= 2) rec.iv = rec.reps === 1 ? DAY : 3 * DAY;
-      else rec.iv = Math.round(rec.iv * rec.ease);
-      rec.ease = Math.min(2.8, rec.ease + 0.05);
-      rec.dueAt = now + rec.iv;
-    }
+    rec.iv = nextInterval(rec, grade);
+    rec.dueAt = now + rec.iv;
     rec.last = grade;
+    rec.lastAt = now;
+    if (grade === 1) rec.forgot = (rec.forgot || 0) + 1;
   }
 
   // ================= 取词 =================
-  function inRetry(word) {
-    for (var i = 0; i < state.retry.length; i++) {
-      if (state.retry[i].w.w === word) return true;
-    }
-    return false;
-  }
-
-  // 到期的旧词，越该复习的排越前
+  // 到期待复习的词，逾期最久的排最前
+  // 只认 dueAt：评价完立刻把 dueAt 推到未来，自然就离开了当前队列，
+  // 同一轮里不会再次被抽到；到期没复习也不会被自动顺延
   function duePool(now) {
     var ws = allWords(), out = [];
     for (var i = 0; i < ws.length; i++) {
       var r = db.records[ws[i].w];
-      if (r && r.seen > 0 && r.dueAt <= now && !inRetry(ws[i].w)) {
+      if (r && r.seen > 0 && r.dueAt <= now) {
         out.push({ w: ws[i], at: r.dueAt });
       }
     }
     out.sort(function (a, b) { return a.at - b.at; });
     return out;
+  }
+
+  // 已到期但还没复习的词数（含逾期）。正在学的那一个不算在里面。
+  // 直接遍历记录而不是整本词库：6687 个词里绝大多数还没有记录，
+  // 而且顶栏每秒刷新一次，走 records 只几十~几千条，开销可以忽略。
+  function dueCount(now) {
+    now = now || Date.now();
+    var cur = state.current && state.current.w;
+    var ks = Object.keys(db.records), n = 0;
+    for (var i = 0; i < ks.length; i++) {
+      var r = db.records[ks[i]];
+      if (r.seen > 0 && r.dueAt <= now && ks[i] !== cur) n++;
+    }
+    return n;
+  }
+
+  // 已逾期的词数：到期已超过 1 天还没复习。
+  // 用 1 天做阈值，避免刚过点几分钟就报逾期吓人。
+  function overdueCount(now) {
+    now = now || Date.now();
+    var cur = state.current && state.current.w;
+    var ks = Object.keys(db.records), n = 0;
+    for (var i = 0; i < ks.length; i++) {
+      var r = db.records[ks[i]];
+      if (r.seen > 0 && r.dueAt > 0 && now - r.dueAt > DAY && ks[i] !== cur) n++;
+    }
+    return n;
+  }
+
+  // 排队中最靠前的那个词还有多久到期（0 = 没有在排队的词）。
+  // 「待复习」只数已经到期的，所以刚评价完的词（比如忘了→15 分钟后）
+  // 必然不在里面；这里把它还有多久回来算出来，顶栏才解释得通。
+  function nextDueIn(now) {
+    now = now || Date.now();
+    var ks = Object.keys(db.records), best = 0;
+    for (var i = 0; i < ks.length; i++) {
+      var r = db.records[ks[i]];
+      if (r.seen > 0 && r.dueAt > now && (!best || r.dueAt < best)) best = r.dueAt;
+    }
+    return best ? best - now : 0;
+  }
+
+  // 倒计时文案：向上取整，免得 14:59 显示成「15 分钟」
+  function countdownText(ms) {
+    if (ms < MIN) return '不到 1 分钟后';
+    if (ms < 60 * MIN) return Math.ceil(ms / MIN) + ' 分钟后';
+    if (ms < DAY) return Math.ceil(ms / (60 * MIN)) + ' 小时后';
+    var d = ms / DAY;
+    return (d < 10 ? Math.ceil(d * 10) / 10 : Math.ceil(d)) + ' 天后';
   }
 
   // 下一个没学过的词，严格按书的顺序
@@ -154,15 +255,10 @@
     return null;
   }
 
-  // 返回 { w, mode }：mode = retry（本轮重来）/ due（到期复习）/ new（新词）
+  // 返回 { w, mode }：mode = due（到期复习）/ new（新词）
+  // 到期复习永远优先于新词，但两者都不设数量上限
   function pickNext() {
     if (state.forced.length) return { w: state.forced.shift(), mode: 'due' };
-
-    for (var i = 0; i < state.retry.length; i++) {
-      if (state.retry[i].at <= state.step) {
-        return { w: state.retry.splice(i, 1)[0].w, mode: 'retry' };
-      }
-    }
 
     var due = duePool(Date.now());
     if (due.length) return { w: due[0].w, mode: 'due' };
@@ -201,7 +297,6 @@
     comp: '',
     wordStart: 0,
     step: 0,
-    retry: [],
     forced: []
   };
 
@@ -721,9 +816,6 @@
 
   // 预取下一个词的发音（只窥探，不改动队列）
   function peekNext() {
-    for (var i = 0; i < state.retry.length; i++) {
-      if (state.retry[i].at <= state.step) return state.retry[i].w;
-    }
     if (state.forced.length) return state.forced[0];
     var due = duePool(Date.now());
     if (due.length) return due[0].w;
@@ -795,7 +887,7 @@
   // ================= 视图切换 =================
   function setView(name) {
     state.view = name;
-    ['drill', 'done', 'stats', 'words'].forEach(function (v) {
+    ['drill', 'done', 'stats', 'words', 'favs'].forEach(function (v) {
       var node = el('view-' + v);
       if (node) node.classList.toggle('is-active', v === name);
     });
@@ -804,6 +896,7 @@
     });
     if (name === 'stats') renderStats();
     if (name === 'words') renderWords(true);
+    if (name === 'favs') renderFavs();
     // 键盘只跟着学习区走，切到统计/词库时收起
     showKeyboard(name === 'drill');
     if (name === 'drill') updateHint();
@@ -812,6 +905,8 @@
     document.documentElement.classList.toggle('is-drill-locked', lock);
     document.body.classList.toggle('is-drill-locked', lock);
     if (!lock) window.scrollTo(0, 0);
+    // 切走再回来时星标要跟上（收藏页里取消过收藏，学习页的星标也得灭掉）
+    syncFavUI();
   }
 
   // ================= 学习流程 =================
@@ -829,6 +924,8 @@
     startedAt = Date.now();
     timerId = setInterval(function () {
       el('drillTimer').textContent = mmss(Math.floor((Date.now() - startedAt) / 1000));
+      // 停在一个词上不动时，「下一词 3 分钟后」要跟着走秒，到点了也要翻成待复习
+      refreshDueStat();
     }, 1000);
   }
 
@@ -848,10 +945,11 @@
     state.wordStart = Date.now();
 
     el('wordText').textContent = w.w;
-    el('stageMode').textContent = mode === 'retry' ? '巩固记忆' : mode === 'due' ? '间隔复习' : '看词自评';
+    el('stageMode').textContent = mode === 'due' ? '间隔复习' : '看词自评';
     el('wordPhonetic').textContent = w.ph || '';
     el('fullDef').textContent = w.def;
     el('fullDef').classList.remove('show');
+    prefetchDetail(w.w);
     // 三个自评选项在看词阶段就出现：先凭印象定级，定完才揭晓中文
     el('rateRow').classList.add('show');
     el('typeRow').classList.remove('show');
@@ -870,21 +968,24 @@
     setFeedback('');
     renderAnswer();
     renderProgress();
+    syncFavUI();
     el('hints').textContent = hintText(w, state.origin);
 
     if (db.settings.autoplay) speak(w.w);
     preloadNext();
   }
 
-  // 提示语随取词来源变化，让人知道这是刚见过的词
+  // 提示语随取词来源变化：复习的词告诉用户隔了多久、有没有逾期
   function hintText(w, mode) {
     var tail = '　·　R 重听发音';
     var rate = 'J 忘了　·　K 模糊　·　L 很熟';
-    if (mode === 'retry') return '这个词刚才没记住，再打一遍　·　' + rate + tail;
     if (mode === 'due') {
       var r = db.records[w.w];
       var gap = r && r.lastAt ? humanGap(Date.now() - r.lastAt) : '';
-      return '复习' + (gap ? ' · 上次是 ' + gap + '前' : '') + '　·　' + rate + tail;
+      var late = r && r.dueAt && Date.now() - r.dueAt > DAY
+        ? ' · 已逾期 ' + humanGap(Date.now() - r.dueAt)
+        : '';
+      return '复习间隔到了' + (gap ? ' · 距上次 ' + gap : '') + late + '　·　' + rate + tail;
     }
     return '先凭印象判断：' + rate + tail;
   }
@@ -899,6 +1000,27 @@
     var total = ws.length || 1;
     el('drillIndex').textContent = '已学 ' + learned + ' / ' + ws.length;
     el('drillBar').style.width = (learned / total) * 100 + '%';
+
+    // 复习队列的实时状态：待复习（含逾期）与其中已逾期多少；
+    // 一个都没到期时，报出最近的一个还要多久回来，否则永远是「待复习 0」
+    refreshDueStat();
+  }
+
+  // 只刷顶栏那个小格子，切词/每秒 tick 都调它
+  function refreshDueStat() {
+    var stat = el('dueStat');
+    if (!stat) return;
+    var now = Date.now();
+    var due = dueCount(now);
+    var late = overdueCount(now);
+    if (due) {
+      stat.innerHTML = '待复习 <b>' + due + '</b>' +
+        (late ? ' · 逾期 <b class="late">' + late + '</b>' : '');
+      return;
+    }
+    var wait = nextDueIn(now);
+    stat.innerHTML = '待复习 <b>0</b>' +
+      (wait ? ' · <span class="due-next">下一词 ' + countdownText(wait) + '</span>' : '');
   }
 
   // ================= 打字判定 =================
@@ -1129,9 +1251,9 @@
     var grade = forcedGrade || state.grade || 2;
     if (db.settings.hideAnswer && state.errors > 0) grade = Math.min(grade, 2);
 
+    // applyGrade 内部写 iv / dueAt / last / lastAt / forgot，这里不再重复写时间
     applyGrade(rec, grade);
     rec.seen += 1;
-    rec.lastAt = Date.now();
     if (!ok || state.errors > 0 || state.mistakes > 0) rec.wrong += 1;
 
     var d = dayEntry();
@@ -1141,38 +1263,31 @@
     if (ok && state.errors === 0 && state.mistakes === 0) d.clean += 1;
     if (wasNew) d.newWords += 1;
 
-    // 忘了、模糊的词在本次学习里换个位置再出现一次：
-    // 忘了插在 4~6 个词之后（趁还有印象），模糊插在 11~14 个词之后（稍稍拉开）
-    if (grade === 1) {
-      scheduleRetry(w, 4 + Math.round(Math.random() * 2));
-    } else if (grade === 2) {
-      scheduleRetry(w, 11 + Math.round(Math.random() * 3));
-    }
-
     save();
+    renderProgress();
 
+    // 评价完立刻把这个词推进未来的队列，本轮不会再出现
+    var gap = ivText(rec.iv);
     var inp = el('typeInput');
     if (ok) {
       inp.classList.remove('is-bad');
       inp.classList.add('is-ok');
-      setFeedback('对了', 'ok');
+      setFeedback('对了 · ' + gap + '后复习', 'ok');
       beep(660, 0.07, 'sine', 0.04);
       setTimeout(function () { beep(990, 0.09, 'sine', 0.032); }, 75);
       setTimeout(next, 430);
     } else {
-      setFeedback('已给出答案 · 记为「忘了」', 'bad');
+      setFeedback('已给出答案 · 记为「忘了」· ' + gap + '后复习', 'bad');
       setTimeout(next, 1150);
     }
   }
 
-  function scheduleRetry(w, gap) {
-    for (var i = 0; i < state.retry.length; i++) {
-      if (state.retry[i].w.w === w.w) {
-        state.retry[i].at = state.step + gap;
-        return;
-      }
-    }
-    state.retry.push({ w: w, at: state.step + gap });
+  // 间隔转成「15 分钟」「2.2 天」这种短文案
+  function ivText(ms) {
+    if (ms < 60 * MIN) return Math.round(ms / MIN) + ' 分钟';
+    if (ms < DAY) return Math.round(ms / (60 * MIN)) + ' 小时';
+    var d = ms / DAY;
+    return (d < 10 ? Math.round(d * 10) / 10 : Math.round(d)) + ' 天';
   }
 
   function next() {
@@ -1180,14 +1295,24 @@
     loadNext();
   }
 
-  // 整本书都学过、且没有到期复习时才会走到这里
+  // 全书的词都学过、且当下没有到期复习时才会走到这里
   function endAll() {
     stopTimer();
     var d = dayEntry();
     var cpm = d.seconds ? Math.round(d.chars / (d.seconds / 60)) : 0;
     var acc = d.words ? Math.round((d.clean / d.words) * 100) : 0;
 
-    el('doneTitle').textContent = '整本书都过完了，暂时没有到期的词';
+    // 下一次有词要复习是什么时候，给个明确的期待
+    var nextAt = 0;
+    Object.keys(db.records).forEach(function (k) {
+      var r = db.records[k];
+      if (r.seen > 0 && r.dueAt > 0 && (!nextAt || r.dueAt < nextAt)) nextAt = r.dueAt;
+    });
+    var tip = nextAt
+      ? '下一个词在 ' + ivText(Math.max(0, nextAt - Date.now())) + '后等你复习'
+      : '这本书的词都过完了，暂时没有要复习的词';
+
+    el('doneTitle').textContent = '这一轮结束了 · ' + tip;
     el('doneWords').textContent = d.words;
     el('doneAcc').innerHTML = acc + '<small>%</small>';
     el('doneCpm').innerHTML = cpm + '<small>字/分</small>';
@@ -1201,7 +1326,6 @@
   function forceBatch(n) {
     var batch = reviewBatch(n);
     if (!batch.length) return;
-    state.retry = [];
     state.step = 0;
     state.forced = batch;
     startTimer();
@@ -1354,10 +1478,17 @@
       }
     }
     return '<tr>' +
-      '<td class="w">' + esc(w.w) + '</td>' +
+      '<td class="w">' +
+      '<button class="row-fav' + (isFav(w.w) ? ' is-on' : '') + '" type="button"' +
+      ' data-w="' + esc(w.w) + '" aria-pressed="' + (isFav(w.w) ? 'true' : 'false') + '"' +
+      ' title="' + (isFav(w.w) ? '取消收藏' : '收藏') + '">' + FAV_SVG + '</button>' +
+      esc(w.w) + '</td>' +
       '<td class="p">' + esc(w.ph || '—') + '</td>' +
       '<td class="a">' + esc(w.a) + '</td>' +
       '<td>' + badge + '</td>' +
+      '<td class="d"><button class="row-detail" type="button"' +
+      ' data-w="' + esc(w.w) + '" data-ph="' + esc(w.ph || '') + '" data-def="' + esc(w.def || w.a) + '"' +
+      ' title="词根、词组、固定搭配、例句">详细</button></td>' +
       '</tr>';
   }
 
@@ -1444,9 +1575,319 @@
 
     save();
     wordCache = null;
+    wordIndex = null;
     el('importHint').textContent = '导入 ' + added + ' 个新词（跳过重复 ' + (parsed.length - added) + ' 个）';
     el('importText').value = '';
     renderWords(true);
+  }
+
+  // ================= 详细资料 =================
+  // 词根 / 词组 / 固定搭配 / 例句，离线打包在 assets/detail/ 下：
+  //   manifest.json 存每个分片的首词（按字母序连成一片），
+  //   客户端二分定位到分片，只取那一个 200KB 左右的文件，取到即缓存在内存里。
+  // 启动时不加载，点「详细」才发请求；切词时后台预取当前词所在的分片。
+  var DETAIL_BASE = 'assets/detail/';
+  var detailManifest = null;      // ["abandon", "absorb", ...]
+  var detailVer = '';             // 分片内容的版本号，拼到分片 URL 上防缓存错位
+  var detailManifestReq = null;
+  var detailChunks = {};          // 分片序号 → { 单词: 记录 }
+  var detailChunkReq = {};        // 分片序号 → 进行中的请求
+  var detailShown = false;
+
+  function detailGet(url) {
+    return fetch(url).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    });
+  }
+
+  function detailManifestLoad() {
+    if (detailManifest) return Promise.resolve(detailManifest);
+    if (!detailManifestReq) {
+      detailManifestReq = detailGet(DETAIL_BASE + 'manifest.json').then(function (m) {
+        if (Array.isArray(m)) {
+          detailManifest = m;
+        } else if (m && Array.isArray(m.c)) {
+          detailManifest = m.c;
+          detailVer = m.v || '';
+        } else {
+          detailManifest = [];
+        }
+        return detailManifest;
+      }, function () {
+        detailManifest = [];
+        return detailManifest;
+      });
+    }
+    return detailManifestReq;
+  }
+
+  // 二分：找「首词 <= 目标词」里序号最大的那个分片，就是目标词所在的分片
+  function detailChunkIndex(key) {
+    var man = detailManifest, lo = 0, hi = man.length - 1, ans = 0;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (man[mid] <= key) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return ans;
+  }
+
+  function detailLoadChunk(i) {
+    if (detailChunks[i]) return Promise.resolve(detailChunks[i]);
+    if (!detailChunkReq[i]) {
+      detailChunkReq[i] = detailGet(DETAIL_BASE + i + '.json' + (detailVer ? '?v=' + detailVer : '')).then(function (data) {
+        detailChunks[i] = data || {};
+        return detailChunks[i];
+      }, function () {
+        detailChunks[i] = {};
+        return detailChunks[i];
+      });
+    }
+    return detailChunkReq[i];
+  }
+
+  // 返回 Promise<记录 | null>
+  function detailOf(word) {
+    var key = String(word || '').trim().toLowerCase();
+    return detailManifestLoad().then(function (man) {
+      if (!man.length) return null;
+      return detailLoadChunk(detailChunkIndex(key)).then(function (c) {
+        return c[key] || null;
+      });
+    });
+  }
+
+  // 切词后有空就把当前词所在的分片先取下来，点「详细」时基本是瞬开
+  function prefetchDetail(word) {
+    if (!word) return;
+    setTimeout(function () {
+      detailOf(word).catch(function () { });
+    }, 1200);
+  }
+
+  function detailSection(title, inner) {
+    return '<div class="detail-sec">' +
+      '<div class="detail-sec-title">' + title + '</div>' + inner + '</div>';
+  }
+
+  function renderDetail(intro, rec) {
+    var host = el('detailBody');
+    var html = '';
+
+    // 释义：不管有没有扩展资料，先把中文摆出来
+    if (intro.def) {
+      html += detailSection('释义', '<p class="detail-def">' + esc(intro.def) + '</p>');
+    }
+
+    if (!rec) {
+      html += '<p class="detail-tip">这个词暂时没有词根 / 搭配资料，先记住释义就够了。</p>';
+      host.innerHTML = html;
+      host.scrollTop = 0;
+      updateDetailScroll();
+      return;
+    }
+
+    if (rec.e && rec.e.length) {
+      html += detailSection('词根 · 词源',
+        rec.e.map(function (t) { return '<p class="detail-para">' + esc(t) + '</p>'; }).join(''));
+    }
+
+    if (rec.p && rec.p.length) {
+      html += detailSection('词组 · 固定搭配',
+        '<ul class="detail-list">' + rec.p.map(function (p) {
+          return '<li><b>' + esc(p[0]) + '</b>' +
+            (p[1] ? '<span>' + esc(p[1]) + '</span>' : '') + '</li>';
+        }).join('') + '</ul>');
+    }
+
+    if (rec.s && rec.s.length) {
+      html += detailSection('例句',
+        '<ul class="detail-list detail-sent">' + rec.s.map(function (s) {
+          return '<li><i>' + esc(s[0]) + '</i>' +
+            (s[1] ? '<span>' + esc(s[1]) + '</span>' : '') + '</li>';
+        }).join('') + '</ul>');
+    }
+
+    if (rec.r && rec.r.ws && rec.r.ws.length) {
+      html += detailSection('同根词' + (rec.r.root ? ' · ' + esc(rec.r.root) : ''),
+        '<div class="detail-chips">' + rec.r.ws.map(function (w) {
+          return '<div class="detail-chip"><b>' + esc(w[0]) + '</b>' +
+            (w[1] ? '<span>' + esc(w[1]) + '</span>' : '') + '</div>';
+        }).join('') + '</div>');
+    }
+
+    host.innerHTML = html;
+    host.scrollTop = 0;
+    updateDetailScroll();
+  }
+
+  // 内容超过可视高度时给底部加个淡出，提示还能往下滚
+  function updateDetailScroll() {
+    var body = el('detailBody');
+    if (!body) return;
+    var more = body.scrollHeight - body.scrollTop - body.clientHeight > 6;
+    body.classList.toggle('is-scroll', more);
+  }
+
+  function openDetail(word, phonetic, def) {
+    if (!word) return;
+    detailShown = true;
+    el('detailWord').textContent = word;
+    el('detailPh').textContent = phonetic || '';
+    el('detailBody').innerHTML = '<p class="detail-tip">正在取资料…</p>';
+    el('detailMask').classList.add('show');
+    el('detailSheet').classList.add('show');
+    el('detailSheet').setAttribute('aria-hidden', 'false');
+
+    var inp = el('typeInput');
+    if (inp) inp.blur();
+
+    var intro = { w: word, ph: phonetic, def: def };
+    detailOf(word).then(function (rec) {
+      if (!detailShown) return;         // 取的过程中已经关掉了
+      if (el('detailWord').textContent !== word) return;  // 已经换成别的词了
+      renderDetail(intro, rec);
+    }, function () {
+      renderDetail(intro, null);
+    });
+  }
+
+  function closeDetail() {
+    if (!detailShown) return;
+    detailShown = false;
+    el('detailMask').classList.remove('show');
+    el('detailSheet').classList.remove('show');
+    el('detailSheet').setAttribute('aria-hidden', 'true');
+    // 从打字阶段打开的，关掉就把焦点还给输入框，接着敲
+    if (state.view === 'drill' && state.phase === 'typing') {
+      var inp = el('typeInput');
+      try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
+    }
+  }
+
+  function openCurrentDetail() {
+    var w = state.current;
+    if (!w) return;
+    openDetail(w.w, w.ph ? '/' + String(w.ph).replace(/^\/|\/$/g, '') + '/' : '', w.def);
+  }
+
+  // ================= 收藏 =================
+  // 数据只存 { 单词: 收藏时间戳 }，释义、音标一律回词库现取，不复制词条。
+  // 时间戳有双重作用：既判断收藏与否，也用来做「最新收藏排最前」的排序。
+  var FAV_SVG = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.7l2.55 5.2 5.72.83-4.14 4.03.98 5.7L12 16.75l-5.11 2.69.98-5.7-4.14-4.03 5.72-.83z"/></svg>';
+
+  function isFav(word) {
+    return !!(word && db.favs && db.favs[word]);
+  }
+
+  // 有效收藏数：词表换过之后，收藏里可能有词库里已经找不到的旧词，
+  // 那些照样留在数据里（不删除用户数据），但不计入显示数量。
+  function favItems() {
+    var idx = wordByKey();
+    return Object.keys(db.favs)
+      .sort(function (a, b) { return db.favs[b] - db.favs[a]; })
+      .map(function (k) { return idx[k]; })
+      .filter(Boolean);
+  }
+
+  function toggleFav(word) {
+    if (!word) return false;
+    if (!db.favs) db.favs = {};
+    var on;
+    if (db.favs[word]) { delete db.favs[word]; on = false; }
+    else { db.favs[word] = Date.now(); on = true; }
+    save();
+    syncFavUI();
+    // 收藏页正在看的时候：新收藏整体重排（要排到最前），取消收藏只摘掉那一行，
+    // 免得整张列表重画、滚动位置跳回顶部
+    if (state.view === 'favs') {
+      if (on) renderFavs();
+      else dropFavRow(word);
+    }
+    return on;
+  }
+
+  function dropFavRow(word) {
+    var rows = document.querySelectorAll('#favList .fav-row');
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].dataset.w === word) { rows[i].parentNode.removeChild(rows[i]); break; }
+    }
+    var n = favItems().length;
+    if (!n) { renderFavs(); return; }
+    var sub = el('favSub');
+    if (sub) sub.innerHTML = '共 <b>' + n + '</b> 个词，最新收藏的排在最前面，点词看词根和例句。';
+  }
+
+  function favTime(ts) {
+    var d = Date.now() - (ts || 0);
+    if (!ts) return '';
+    if (d < 50000) return '刚刚';
+    return humanGap(d) + '前';
+  }
+
+  function favRow(w) {
+    var ph = w.ph ? '/' + String(w.ph).replace(/^\/|\/$/g, '') + '/' : '';
+    var ts = db.favs[w.w] || 0;
+    return '<div class="fav-row" data-w="' + esc(w.w) + '" data-ph="' + esc(ph) + '"' +
+      ' data-def="' + esc(w.def || w.a) + '" role="button" tabindex="0">' +
+      '<button class="fav-btn is-on" type="button" data-fav="' + esc(w.w) + '"' +
+      ' title="取消收藏" aria-label="取消收藏 ' + esc(w.w) + '">' + FAV_SVG + '</button>' +
+      '<div class="fav-body">' +
+      '<div class="fav-line"><span class="fav-word">' + esc(w.w) + '</span>' +
+      '<span class="fav-ph">' + esc(ph) + '</span></div>' +
+      '<div class="fav-def">' + esc(w.a || w.def) + '</div>' +
+      '</div>' +
+      '<span class="fav-time">' + esc(favTime(ts)) + '</span>' +
+      '</div>';
+  }
+
+  function renderFavs() {
+    var items = favItems();
+    var host = el('favList');
+    var empty = el('favEmpty');
+    var sub = el('favSub');
+    if (!host) return;
+
+    if (!items.length) {
+      host.innerHTML = '';
+      host.hidden = true;
+      if (empty) empty.hidden = false;
+      if (sub) sub.textContent = '还没收藏任何单词。';
+      return;
+    }
+
+    host.innerHTML = items.map(favRow).join('');
+    host.hidden = false;
+    if (empty) empty.hidden = true;
+    if (sub) {
+      sub.innerHTML = '共 <b>' + items.length + '</b> 个词，最新收藏的排在最前面，点词看词根和例句。';
+    }
+  }
+
+  // 练习页星标、顶栏数字、词库行内星标、收藏页列表，统一在这里对齐
+  function syncFavUI() {
+    var btn = el('btnFav');
+    if (btn) {
+      var on = state.current ? isFav(state.current.w) : false;
+      btn.classList.toggle('is-on', on);
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+      btn.title = on ? '取消收藏' : '收藏这个词';
+      btn.setAttribute('aria-label', on ? '取消收藏' : '收藏这个词');
+    }
+
+    var n = favItems().length;
+    var badge = el('navFavCount');
+    if (badge) {
+      badge.textContent = n;
+      badge.hidden = !n;
+    }
+
+    document.querySelectorAll('.row-fav').forEach(function (b) {
+      var on2 = isFav(b.dataset.w);
+      b.classList.toggle('is-on', on2);
+      b.title = on2 ? '取消收藏' : '收藏';
+      b.setAttribute('aria-pressed', on2 ? 'true' : 'false');
+    });
   }
 
   // ================= 设置 =================
@@ -1512,6 +1953,64 @@
     el('btnSpeak').addEventListener('click', function (e) {
       e.stopPropagation();
       if (state.current) speak(state.current.w, true);
+    });
+
+    // 「详细」：词根 / 词组 / 固定搭配 / 例句
+    el('btnDetail').addEventListener('click', function (e) {
+      e.stopPropagation();
+      openCurrentDetail();
+    });
+
+    // 收藏当前词：再点一次取消
+    el('btnFav').addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (!state.current) return;
+      var on = toggleFav(state.current.w);
+      if (on) beep(660, 0.05);
+    });
+
+    // 收藏页：星标取消收藏，点整行看详细
+    el('favList').addEventListener('click', function (e) {
+      var star = e.target && e.target.closest ? e.target.closest('.fav-btn') : null;
+      if (star) {
+        e.stopPropagation();
+        toggleFav(star.dataset.fav);
+        return;
+      }
+      var row = e.target && e.target.closest ? e.target.closest('.fav-row') : null;
+      if (row) openDetail(row.dataset.w, row.dataset.ph, row.dataset.def);
+    });
+
+    el('favList').addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      var row = e.target && e.target.closest ? e.target.closest('.fav-row') : null;
+      if (!row || e.target.closest('.fav-btn')) return;
+      e.preventDefault();
+      openDetail(row.dataset.w, row.dataset.ph, row.dataset.def);
+    });
+
+    el('btnFavGo').addEventListener('click', function () {
+      if (!state.current) { if (!timerId) startTimer(); loadNext(); }
+      else setView('drill');
+    });
+    el('detailClose').addEventListener('click', closeDetail);
+    el('detailMask').addEventListener('click', closeDetail);
+    el('detailBody').addEventListener('scroll', updateDetailScroll);
+
+    // 词库表格里的「详细」「星标」用事件委托，避免给几千行各挂一个监听
+    el('wordTableBody').addEventListener('click', function (e) {
+      var t = e.target;
+      if (!t || !t.closest) return;
+      var star = t.closest('.row-fav');
+      if (star) {
+        e.stopPropagation();
+        toggleFav(star.dataset.w);
+        return;
+      }
+      var b = t.closest('.row-detail');
+      if (!b) return;
+      e.stopPropagation();
+      openDetail(b.dataset.w, b.dataset.ph, b.dataset.def);
     });
 
     document.querySelectorAll('.rate').forEach(function (b) {
@@ -1584,6 +2083,11 @@
     });
 
     document.addEventListener('keydown', function (e) {
+      // 详细面板打开时，键盘交给面板：只认 Esc，别把 J/K/L 当成自评
+      if (detailShown) {
+        if (e.key === 'Escape') { e.preventDefault(); closeDetail(); }
+        return;
+      }
       if (state.view !== 'drill') return;
       var tag = (e.target && e.target.tagName) || '';
       if (tag === 'TEXTAREA' || tag === 'INPUT') {
@@ -1670,11 +2174,11 @@
     });
 
     el('btnReset').addEventListener('click', function () {
-      if (!confirm('会清空所有学习记录和导入的词，确定吗？')) return;
-      localStorage.removeItem(STORE_KEY);
+      if (!confirm('会清空所有学习记录、收藏和导入的词，确定吗？')) return;
+      localStorage.removeItem(storeKey());
       db = load();
       wordCache = null;
-      state.retry = [];
+      wordIndex = null;
       state.forced = [];
       state.step = 0;
       applySettings();
@@ -1684,13 +2188,37 @@
     });
   }
 
+  // 回归脚本用：把间隔计算与队列查询暴露出来，便于逐条核对验收场景
+  window.__review = {
+    nextInterval: nextInterval,
+    applyGrade: applyGrade,
+    duePool: duePool,
+    pickNext: pickNext,
+    ivText: ivText,
+    dueCount: dueCount,
+    overdueCount: overdueCount,
+    nextDueIn: nextDueIn,
+    max: IV_MAX,
+    DAY: DAY,
+    MIN: MIN,
+    // 收藏相关的只读接口，给回归脚本核对持久化与排序
+    isFav: isFav,
+    toggleFav: toggleFav,
+    favItems: favItems
+  };
+
   // ================= 启动 =================
   // 没有欢迎页也没有每日任务：打开就是接着上次的那个词
+  // 先把 load() 做过的迁移（补 forget_count、超长间隔压回 15 天）落盘一次，
+  // 免得每次刷新都重算，也保证数据和内存里的状态一致
+  save();
   buildKeyboard();
   mountHands();
   applySettings();
   bind();
   startTimer();
   loadNext();
+  // 万一没有可学的词（整本书都进了复习间隔），也要把收藏数字摆对
+  syncFavUI();
 
 })();
