@@ -1027,16 +1027,26 @@ button {
 .drill.is-recall .meaning-block { display: none; }
 .drill.is-recall .action-zone { margin-top: 8px; }
 
-/* 键盘常驻：学习卡让出空间，保证「单词 + 键盘」一屏放得下 */
+/* 键盘常驻：练习页锁定成「视口高度 - 顶栏」，页面不出现上下滚动。
+   卡片内部按视口高度收缩（字号用 vh 参与 clamp），键盘永远留在屏幕内。 */
 @media (min-width: 861px) {
-  .drill.kb-open { min-height: calc(100vh - 72px); }
-  .drill.kb-open .study-shell { min-height: 360px; }
-  .drill.kb-open .stage { padding-top: 14px; padding-bottom: 12px; }
-  .drill.kb-open .stage-kicker { margin-bottom: 12px; }
-  .drill.kb-open .word { font-size: clamp(46px, 5.6vw, 78px); margin-bottom: 8px; }
-  .drill.kb-open .phonetic-row { margin-bottom: 14px; }
-  .drill.kb-open .meaning-block { min-height: 86px; }
-  .drill.kb-open .action-zone { height: 92px; margin-top: 4px; }
+  .drill {
+    height: calc(100vh - 72px);
+    height: calc(100dvh - 72px);
+    min-height: 0;
+    padding: 20px 24px 10px;
+    overflow: hidden;
+  }
+  .drill .study-shell { min-height: 0; }
+  .drill .drill-top { min-height: 48px; }
+  .drill .stage { min-height: 0; padding: 10px 30px 6px; }
+  .drill .stage-kicker { margin-bottom: 8px; }
+  .drill .word { font-size: clamp(34px, min(5.4vw, 7.6vh), 72px); margin-bottom: 5px; }
+  .drill .phonetic-row { margin-bottom: 10px; }
+  .drill .meaning-block { min-height: 0; gap: 8px; }
+  .drill .answer { min-height: 1.9em; }
+  .drill .action-zone { height: 78px; margin-top: 2px; }
+  .drill .keyboard-dock.on { max-height: 250px; margin-top: 14px; }
 }
 @media (max-width: 860px) {
   .keyboard-dock { display: none; }
@@ -1049,12 +1059,27 @@ button {
   .kb-wrap { width: 72%; margin: 0 auto; }
   .kb-key { height: 25px; }
   .hands { --hands-bottom: -92px; }
-  .drill.kb-open .hints { display: none; }
-  .drill.kb-open .study-shell { min-height: 320px; }
-  .drill.kb-open .stage-kicker { display: none; }
-  .drill.kb-open .word { font-size: clamp(44px, 5.4vw, 66px); }
-  .drill.kb-open .meaning-block { min-height: 78px; }
-  .drill.kb-open .action-zone { height: 88px; }
+  .drill .hints { display: none; }
+  .drill .stage-kicker { display: none; }
+  .drill .word { font-size: clamp(32px, min(5.4vw, 7.2vh), 62px); }
+  .drill .meaning-block { min-height: 0; }
+  .drill .answer { min-height: 1.8em; }
+  .drill .action-zone { height: 74px; }
+}
+/* 更矮（笔记本半屏、缩放后的窗口）：再压一档，宁可小也不出滚动条 */
+@media (max-height: 700px) and (min-width: 861px) {
+  .drill { padding: 14px 22px 8px; }
+  .drill .drill-top { min-height: 42px; }
+  .drill .stage { padding: 6px 26px 4px; }
+  .drill .word { font-size: clamp(30px, min(5vw, 6.8vh), 52px); margin-bottom: 4px; }
+  .drill .phonetic-row { margin-bottom: 8px; }
+  .drill .answer { font-size: clamp(21px, 2.6vw, 27px); min-height: 1.7em; }
+  .drill .action-zone { height: 70px; }
+  .keyboard-dock.on { max-height: 176px; margin-top: 10px; }
+  .keyboard-panel { padding: 6px 16px 4px; }
+  .kb-key { height: 22px; }
+  .kb-wrap { width: 66%; }
+  .hands { --hands-bottom: -82px; }
 }
 
 /* ============================================================
