@@ -310,12 +310,9 @@
   // 按住键的先后顺序，最新的在最前
   var heldStack = [];
 
-  // 指法提示：下一个该敲的字母（由输入法缓冲 + 整条拼音串推出来）
+  // 键盘提示：hintCode 是当前要伸手指的那个键（手部用），
+  // hintKey 是提示状态的指纹，只有它变了才动 DOM
   var hintCode = '';
-  var hintLetter = '';
-  var hintDone = false;
-  var hintFull = false;
-  // 提示状态的指纹，只有它变了才动 DOM
   var hintKey = '';
 
   function heldPush(code) {
@@ -397,18 +394,47 @@
     return rest.replace(/ü/g, 'v').replace(/[^a-z]/g, '');
   }
 
-  // letter: 下一个该敲的字母；done: 整串已敲完、等空格上屏；full: 答案已全部上屏
+  // 键盘常驻，时刻告诉用户“现在该做什么”。
+  // codes: 要高亮的键（可能多个）；text: 状态栏文案；hand: 手部要伸到哪个键
   function hintState() {
-    var out = { letter: '', done: false, full: false };
-    if (state.view !== 'drill' || state.phase !== 'typing' || state.locked) return out;
-    // 开了「隐藏答案」就不再提示字母，否则等于把读音漏出来
-    if (db.settings.hideAnswer) return out;
+    var out = { codes: [], text: '', hand: '' };
+    if (state.view !== 'drill') return out;
+
+    // ① 看词自评：J / K / L 三选一，三个键一起亮
+    if (state.phase === 'recall') {
+      out.codes = ['KeyJ', 'KeyK', 'KeyL'];
+      out.text = '选择记忆程度 · J 忘了 / K 模糊 / L 很熟';
+      return out;
+    }
+
+    if (state.phase !== 'typing') return out;
+
+    // ② 打错了被锁住：先把错的删掉
+    if (state.locked) {
+      out.codes = ['Backspace'];
+      out.text = '打错了 · Backspace 删掉重来';
+      return out;
+    }
+
     var w = state.current;
     if (!w) return out;
 
     var chars = Array.from(w.a || '');
     var typed = Array.from(state.committed || '').length;
-    if (typed >= chars.length) { out.full = true; return out; }
+
+    // ③ 答案已全部上屏：Enter 提交
+    if (typed >= chars.length) {
+      out.codes = ['Enter'];
+      out.text = '答案已输入完 · Enter 提交';
+      out.hand = 'Enter';
+      return out;
+    }
+
+    // 开了「隐藏答案」就不再提示字母，否则等于把读音漏出来
+    if (db.settings.hideAnswer) {
+      out.text = '按拼音输入中文';
+      return out;
+    }
 
     var target = restPinyin();
     if (!target) return out;
@@ -416,25 +442,27 @@
     var buf = String(state.comp || '').toLowerCase().replace(/[^a-z]/g, '');
     var n = 0;
     while (n < buf.length && n < target.length && buf.charAt(n) === target.charAt(n)) n++;
-    if (n >= target.length) { out.done = true; return out; }   // 整串敲完，空格高亮
-    // 敲错/简拼对不上时，提示的仍然是「这一位该敲的字母」，把人带回来
-    out.letter = target.charAt(n);
-    return out;
-  }
 
-  function idleStateText() {
-    if (hintFull) return 'Enter 提交';
-    if (hintDone) return '字母已敲完 · 空格上屏';
-    if (!hintLetter) return '等待输入';
-    var name = FINGER_NAMES[FINGER_MAP[hintCode]] || '';
-    return '下一个 ' + hintLetter + (name ? ' · ' + name : '');
+    // ④ 整串拼音敲完：空格上屏
+    if (n >= target.length) {
+      out.codes = ['Space'];
+      out.text = '拼音已敲完 · 空格上屏';
+      out.hand = 'Space';
+      return out;
+    }
+
+    // ⑤ 逐字母提示；敲错/简拼对不上时，提示的仍是「这一位该敲的字母」，把人带回来
+    var letter = target.charAt(n);
+    var code = 'Key' + letter.toUpperCase();
+    var name = FINGER_NAMES[FINGER_MAP[code]] || '';
+    out.codes = [code];
+    out.text = '下一个 ' + letter + (name ? ' · ' + name : '');
+    out.hand = code;
+    return out;
   }
 
   function clearHint() {
     hintCode = '';
-    hintLetter = '';
-    hintDone = false;
-    hintFull = false;
     hintKey = '';
     document.querySelectorAll('.kb-key.is-hint').forEach(function (n) {
       n.classList.remove('is-hint');
@@ -444,32 +472,26 @@
   // 提示变化时才动 DOM：换高亮的键、换手的图层
   function updateHint() {
     var h = hintState();
-    var letter = h.letter;
-    // 下一个字母 → 对应字母键；整串敲完 → 空格键
-    var code = letter ? 'Key' + letter.toUpperCase() : (h.done ? 'Space' : '');
-    var key = code + (h.done ? 'd' : '') + (h.full ? 'f' : '');
+    var codes = h.codes || [];
+    var fp = codes.join(',') + '|' + h.text;
 
-    hintDone = h.done;
-    hintFull = h.full;
+    if (fp === hintKey) return;
+    hintKey = fp;
 
-    if (key === hintKey) return;
-    hintKey = key;
-
-    hintCode = code;
-    hintLetter = letter;
+    hintCode = h.hand || '';
 
     document.querySelectorAll('.kb-key.is-hint').forEach(function (n) {
       n.classList.remove('is-hint');
     });
-    if (code) {
+    codes.forEach(function (code) {
       var keyEl = document.querySelector('.kb-key[data-code="' + code + '"]');
       if (keyEl) keyEl.classList.add('is-hint');
-    }
+    });
 
     syncHands();
     if (!document.querySelector('.kb-key.is-down')) {
       var live = el('kbState');
-      if (live) live.textContent = idleStateText();
+      if (live) live.textContent = h.text || '';
     }
   }
 
@@ -500,9 +522,10 @@
   }
 
   function visualKey(e, down) {
-    if (state.view !== 'drill' || state.phase !== 'typing') return;
+    if (state.view !== 'drill') return;
+    if (state.phase !== 'typing' && state.phase !== 'recall') return;
     // 抬起一律处理：否则按着键切走焦点时，手会一直停在下压姿势
-    if (down && document.activeElement !== el('typeInput')) return;
+    if (down && state.phase === 'typing' && document.activeElement !== el('typeInput')) return;
     var code = eventCode(e);
     if (!code) return;
     var key = document.querySelector('.kb-key[data-code="' + code + '"]');
@@ -517,7 +540,7 @@
       var name = FINGER_NAMES[finger] || '';
       el('kbState').textContent = (key.dataset.label || '') + (name ? ' · ' + name : '');
     } else if (!document.querySelector('.kb-key.is-down')) {
-      el('kbState').textContent = idleStateText();
+      el('kbState').textContent = hintState().text || '';
     }
   }
 
@@ -781,6 +804,9 @@
     });
     if (name === 'stats') renderStats();
     if (name === 'words') renderWords(true);
+    // 键盘只跟着学习区走，切到统计/词库时收起
+    showKeyboard(name === 'drill');
+    if (name === 'drill') updateHint();
     window.scrollTo(0, 0);
   }
 
@@ -825,7 +851,10 @@
     // 三个自评选项在看词阶段就出现：先凭印象定级，定完才揭晓中文
     el('rateRow').classList.add('show');
     el('typeRow').classList.remove('show');
-    showKeyboard(false);
+    // 这一屏还没有答案，把答案区收起来，别留一大片空白
+    document.querySelector('.drill').classList.add('is-recall');
+    // 键盘常驻：从看词自评这一屏就摆出来，提示当前该按什么
+    showKeyboard(true);
 
     var inp = el('typeInput');
     inp.value = '';
@@ -1023,6 +1052,7 @@
     el('fullDef').classList.add('show');
     el('rateRow').classList.remove('show');
     el('typeRow').classList.add('show');
+    document.querySelector('.drill').classList.remove('is-recall');
     showKeyboard(true);
     beep(520, 0.05, 'sine', 0.03);
 
@@ -1085,6 +1115,7 @@
   function finish(ok, forcedGrade) {
     if (state.phase === 'judged' && !forcedGrade) return;
     state.phase = 'judged';
+    updateHint();   // 这一词已结束，清掉键位提示
 
     var w = state.current;
     var rec = getRec(w.w);
@@ -1421,9 +1452,12 @@
     document.querySelectorAll('.nav-btn').forEach(function (b) {
       b.addEventListener('click', function () {
         if (b.dataset.view === 'drill') {
-          if (state.view !== 'drill' || !state.current) {
+          // 已经有正在学的词就原样回来，不要跳到下一个（不然敲一半的内容会丢）
+          if (!state.current) {
             if (!timerId) startTimer();
             loadNext();
+          } else {
+            setView('drill');
           }
           return;
         }
