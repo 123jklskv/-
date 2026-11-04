@@ -329,6 +329,16 @@ button {
   flex-direction: column;
 }
 
+/* 练习页期间锁住文档滚动（统计/词库页不受影响）。
+   只要文档不可滚动，任何 focus / 滚动锚定都无法把整页顶上去。 */
+@media (min-width: 861px) {
+  html.is-drill-locked,
+  body.is-drill-locked {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+}
+
 /* ============================================================
    按钮
    ============================================================ */
@@ -554,7 +564,10 @@ button {
 .speak-btn:active { transform: scale(0.9); }
 .speak-btn svg { width: 13px; height: 13px; fill: currentColor; }
 
-/* 释义区 */
+/* 释义区
+   桌面端高度写死（见下方 min-width:861px 段）：揭晓释义时不会把舞台撑高、
+   把单词顶上去；释义再长也只在框内滚动，不挤占输入区与键盘。
+   窄屏仍按内容自然增高，页面本来就可以滚。 */
 .meaning-block {
   position: relative;
   min-height: 112px;
@@ -682,6 +695,8 @@ button {
   width: 100%;
   height: 100px;
   margin-top: 16px;
+  /* 不参与压缩：屏幕再矮也保持整行高度，不会被挤到键盘上 */
+  flex: 0 0 auto;
 }
 
 .rate-row {
@@ -825,6 +840,8 @@ button {
   letter-spacing: 0.055em;
   padding: 16px 0 0;
   min-height: 42px;
+  /* 提示语长短不一时高度也不变，避免把上面的卡片挤来挤去 */
+  flex: 0 0 auto;
 }
 
 /* ============================================================
@@ -1023,9 +1040,9 @@ button {
   opacity: 0.38;
 }
 
-/* 看词自评阶段还没有答案：答案区收起，单词与三个选项挨在一起 */
-.drill.is-recall .meaning-block { display: none; }
-.drill.is-recall .action-zone { margin-top: 8px; }
+/* 看词自评阶段还没有答案：答案区只隐藏、不摘出文档流。
+   占位保留 → 揭晓释义前后单词位置完全一致，切换单词也不会上下跳。 */
+.drill.is-recall .meaning-block { visibility: hidden; pointer-events: none; }
 
 /* 键盘常驻：练习页锁定成「视口高度 - 顶栏」，页面不出现上下滚动。
    卡片内部按视口高度收缩（字号用 vh 参与 clamp），键盘永远留在屏幕内。 */
@@ -1036,17 +1053,30 @@ button {
     min-height: 0;
     padding: 20px 24px 10px;
     overflow: hidden;
+    overscroll-behavior: none;
   }
   .drill .study-shell { min-height: 0; }
-  .drill .drill-top { min-height: 48px; }
-  .drill .stage { min-height: 0; padding: 10px 30px 6px; }
+  .drill .drill-top { min-height: 48px; flex: 0 0 auto; }
+  /* 舞台自己裁切：内容再多也只在卡片内消化，绝不压到下面的输入区与键盘 */
+  .drill .stage { min-height: 0; padding: 10px 30px 6px; overflow: hidden; }
   .drill .stage-kicker { margin-bottom: 8px; }
   .drill .word { font-size: clamp(34px, min(5.4vw, 7.6vh), 72px); margin-bottom: 5px; }
-  .drill .phonetic-row { margin-bottom: 10px; }
-  .drill .meaning-block { min-height: 0; gap: 8px; }
+  .drill .phonetic-row { margin-bottom: 10px; flex: 0 0 auto; }
+  /* 释义区按视口给一个固定高度（自评/打字两个阶段共用，切换单词不跳） */
+  .drill .meaning-block {
+    --meaning-h: clamp(104px, 16vh, 150px);
+    height: var(--meaning-h);
+    min-height: 0;
+    gap: 8px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+  }
   .drill .answer { min-height: 1.9em; }
   .drill .action-zone { height: 78px; margin-top: 2px; }
   .drill .keyboard-dock.on { max-height: 250px; margin-top: 14px; }
+  /* 提示语固定一行，长短不影响卡片高度 */
+  .drill .hints { height: 42px; min-height: 42px; padding-top: 0; white-space: nowrap; overflow: hidden; }
 }
 @media (max-width: 860px) {
   .keyboard-dock { display: none; }
@@ -1062,7 +1092,7 @@ button {
   .drill .hints { display: none; }
   .drill .stage-kicker { display: none; }
   .drill .word { font-size: clamp(32px, min(5.4vw, 7.2vh), 62px); }
-  .drill .meaning-block { min-height: 0; }
+  .drill .meaning-block { --meaning-h: clamp(96px, 15vh, 132px); min-height: 0; }
   .drill .answer { min-height: 1.8em; }
   .drill .action-zone { height: 74px; }
 }
@@ -1073,6 +1103,7 @@ button {
   .drill .stage { padding: 6px 26px 4px; }
   .drill .word { font-size: clamp(30px, min(5vw, 6.8vh), 52px); margin-bottom: 4px; }
   .drill .phonetic-row { margin-bottom: 8px; }
+  .drill .meaning-block { --meaning-h: clamp(88px, 14vh, 118px); }
   .drill .answer { font-size: clamp(21px, 2.6vw, 27px); min-height: 1.7em; }
   .drill .action-zone { height: 70px; }
   .keyboard-dock.on { max-height: 176px; margin-top: 10px; }
@@ -1080,6 +1111,19 @@ button {
   .kb-key { height: 22px; }
   .kb-wrap { width: 66%; }
   .hands { --hands-bottom: -82px; }
+}
+/* 极矮（半屏窗口）：只保留要打的中文，补充释义让位给键盘 */
+@media (max-height: 620px) and (min-width: 861px) {
+  .drill .word { font-size: clamp(28px, min(4.8vw, 6.2vh), 46px); }
+  .drill .phonetic-row { margin-bottom: 6px; }
+  .drill .meaning-block { --meaning-h: 64px; }
+  .drill .answer { font-size: 19px; min-height: 1.35em; }
+  .drill .full-def { display: none; }
+  .drill .action-zone { height: 64px; }
+  .keyboard-dock.on { max-height: 160px; }
+  .kb-key { height: 20px; }
+  .kb-wrap { width: 62%; }
+  .hands { --hands-bottom: -78px; }
 }
 
 /* ============================================================

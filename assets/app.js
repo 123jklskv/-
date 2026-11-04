@@ -807,7 +807,11 @@
     // 键盘只跟着学习区走，切到统计/词库时收起
     showKeyboard(name === 'drill');
     if (name === 'drill') updateHint();
-    window.scrollTo(0, 0);
+    // 学习页锁住文档滚动：练习时页面不能因为聚焦、锚定或内容变高而整体位移
+    var lock = name === 'drill';
+    document.documentElement.classList.toggle('is-drill-locked', lock);
+    document.body.classList.toggle('is-drill-locked', lock);
+    if (!lock) window.scrollTo(0, 0);
   }
 
   // ================= 学习流程 =================
@@ -1063,7 +1067,8 @@
     state.comp = '';
     state.locked = false;
     state.lockValue = '';
-    inp.focus();
+    // preventScroll：聚焦输入框时不要顺手把页面滚一下
+    try { inp.focus({ preventScroll: true }); } catch (e) { inp.focus(); }
 
     renderAnswer();
     setFeedback('');
