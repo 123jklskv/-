@@ -310,10 +310,13 @@
   // 按住键的先后顺序，最新的在最前
   var heldStack = [];
 
-  // 指法提示：下一个该敲的字母（由输入法缓冲 + 当前字的拼音推出来）
+  // 指法提示：下一个该敲的字母（由输入法缓冲 + 整条拼音串推出来）
   var hintCode = '';
   var hintLetter = '';
   var hintDone = false;
+  var hintFull = false;
+  // 提示状态的指纹，只有它变了才动 DOM
+  var hintKey = '';
 
   function heldPush(code) {
     var i = heldStack.indexOf(code);
@@ -381,9 +384,22 @@
   }
 
   // ===== 下一个字母的指法提示 =====
-  // 已提交的字数 → 当前字的拼音 → 减去输入法缓冲里已敲的字母 → 剩下的第一个就是下一个字母
+  // 整串推进：从当前字开始，把后面所有字的拼音接成一条，减去输入法缓冲里已敲的字母，
+  // 剩下的第一个就是下一个字母。这样一路敲到底，不会在每个字边界停下。
+  function restPinyin() {
+    var w = state.current;
+    if (!w) return '';
+    var chars = Array.from(w.a || '');
+    var py = pinyinAlign(w.a || '');
+    var typed = Array.from(state.committed || '').length;
+    var rest = '';
+    for (var j = typed; j < chars.length; j++) rest += (py[j] || '');
+    return rest.replace(/ü/g, 'v').replace(/[^a-z]/g, '');
+  }
+
+  // letter: 下一个该敲的字母；done: 整串已敲完、等空格上屏；full: 答案已全部上屏
   function hintState() {
-    var out = { letter: '', done: false };
+    var out = { letter: '', done: false, full: false };
     if (state.view !== 'drill' || state.phase !== 'typing' || state.locked) return out;
     // 开了「隐藏答案」就不再提示字母，否则等于把读音漏出来
     if (db.settings.hideAnswer) return out;
@@ -392,26 +408,23 @@
 
     var chars = Array.from(w.a || '');
     var typed = Array.from(state.committed || '').length;
-    if (typed >= chars.length) return out;
+    if (typed >= chars.length) { out.full = true; return out; }
 
-    var target = String(pinyinAlign(w.a || '')[typed] || '')
-      .replace(/ü/g, 'v').replace(/[^a-z]/g, '');
+    var target = restPinyin();
     if (!target) return out;
 
     var buf = String(state.comp || '').toLowerCase().replace(/[^a-z]/g, '');
     var n = 0;
     while (n < buf.length && n < target.length && buf.charAt(n) === target.charAt(n)) n++;
-    if (n >= target.length) {           // 这个字的拼音敲全了，在等选字上屏
-      out.done = buf.length >= target.length;
-      return out;
-    }
+    if (n >= target.length) { out.done = true; return out; }   // 整串敲完，空格高亮
     // 敲错/简拼对不上时，提示的仍然是「这一位该敲的字母」，把人带回来
     out.letter = target.charAt(n);
     return out;
   }
 
   function idleStateText() {
-    if (hintDone) return '选字 · 空格上屏';
+    if (hintFull) return 'Enter 提交';
+    if (hintDone) return '字母已敲完 · 空格上屏';
     if (!hintLetter) return '等待输入';
     var name = FINGER_NAMES[FINGER_MAP[hintCode]] || '';
     return '下一个 ' + hintLetter + (name ? ' · ' + name : '');
@@ -421,6 +434,8 @@
     hintCode = '';
     hintLetter = '';
     hintDone = false;
+    hintFull = false;
+    hintKey = '';
     document.querySelectorAll('.kb-key.is-hint').forEach(function (n) {
       n.classList.remove('is-hint');
     });
@@ -430,9 +445,15 @@
   function updateHint() {
     var h = hintState();
     var letter = h.letter;
-    var code = letter ? 'Key' + letter.toUpperCase() : '';
+    // 下一个字母 → 对应字母键；整串敲完 → 空格键
+    var code = letter ? 'Key' + letter.toUpperCase() : (h.done ? 'Space' : '');
+    var key = code + (h.done ? 'd' : '') + (h.full ? 'f' : '');
+
     hintDone = h.done;
-    if (code === hintCode) return;
+    hintFull = h.full;
+
+    if (key === hintKey) return;
+    hintKey = key;
 
     hintCode = code;
     hintLetter = letter;
@@ -441,8 +462,8 @@
       n.classList.remove('is-hint');
     });
     if (code) {
-      var key = document.querySelector('.kb-key[data-code="' + code + '"]');
-      if (key) key.classList.add('is-hint');
+      var keyEl = document.querySelector('.kb-key[data-code="' + code + '"]');
+      if (keyEl) keyEl.classList.add('is-hint');
     }
 
     syncHands();
@@ -933,8 +954,8 @@
 
     // 下一个待敲字母在整串拼音里的序号（用于拼音行与键盘的同步提示）
     var nextIdx = base + compOn;
-    // 提示只落在当前这个字上：拼音敲全、在等选字时不要跳到下一个字
-    var nxLimit = pre[Math.min(typed.length + 1, chars.length)];
+    // 一路走到整条拼音串末尾：字边界不再是提示的终点
+    var nxLimit = pre[chars.length];
 
     chars.forEach(function (ch, i) {
       var cls = 'pending';
